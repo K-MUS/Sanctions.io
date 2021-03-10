@@ -15,6 +15,17 @@
 *&
 *&  Author: Rodrigo Giner de la Vega
 *&---------------------------------------------------------------------*
+*---------------------------------------------------------------------*
+* Text Elements 
+*---------------------------------------------------------------------*
+* P_API	API Token
+* P_DEST	RFC Destination
+* P_FIELD	Field
+* P_LIST	Source List
+* P_TABLE	Table
+* R_V10	API version 1.0
+* R_V12	API version 1.2
+* SO_NAME	Name
 
 REPORT  zsanctionsio.
 
@@ -56,15 +67,18 @@ FIELD-SYMBOLS: <gs_data> TYPE ANY,
 
 * Selection Screen
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME.
-PARAMETERS: p_api TYPE string OBLIGATORY LOWER CASE,
-            p_dest(20) OBLIGATORY.
+  PARAMETERS: p_api TYPE string OBLIGATORY LOWER CASE,
+              p_dest(20) OBLIGATORY.
+  SELECTION-SCREEN SKIP.
+  PARAMETERS: r_v12 RADIOBUTTON GROUP rad1 DEFAULT 'X',
+              r_v10 RADIOBUTTON GROUP rad1.
 SELECTION-SCREEN END OF BLOCK b1.
 
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME.
-PARAMETERS: p_table TYPE string,
-            p_field TYPE string.
-SELECT-OPTIONS: so_name FOR lv_name NO-EXTENSION NO INTERVALS.
-PARAMETERS: p_list(10) AS LISTBOX VISIBLE LENGTH 50.
+  PARAMETERS: p_table TYPE string,
+              p_field TYPE string.
+  SELECT-OPTIONS: so_name FOR lv_name NO-EXTENSION NO INTERVALS LOWER CASE.
+  PARAMETERS: p_list(10) AS LISTBOX VISIBLE LENGTH 50.
 SELECTION-SCREEN END OF BLOCK b2.
 
 AT SELECTION-SCREEN OUTPUT.
@@ -127,6 +141,7 @@ START-OF-SELECTION.
 
   DESCRIBE TABLE gt_data LINES lv_lines.
   LOOP AT gt_data INTO gs_data.
+    CHECK gs_data-name IS NOT INITIAL.
     lv_index = lv_index + 1.
     PERFORM call_api CHANGING gs_data-name
                               p_list
@@ -146,7 +161,7 @@ START-OF-SELECTION.
   ENDLOOP.
 
 END-OF-SELECTION.
-
+  CLEAR: p_table, p_field.
 * Show ALV
   PERFORM show_alv.
 *&---------------------------------------------------------------------*
@@ -168,13 +183,24 @@ FORM get_data .
         lo_field_ref    TYPE REF TO data,
         lo_tabledescr   TYPE REF TO cl_abap_tabledescr,
         lo_table_ref    TYPE REF TO data.
+  DATA: lr_name          TYPE RANGE OF char120,
+        ls_name          LIKE LINE OF lr_name,
+        lv_aux(120).
+
+  lr_name[] = so_name[].
+  LOOP AT lr_name INTO ls_name.
+    ls_name-option = 'CP'.
+    lv_aux = ls_name-low.
+    CONCATENATE '*' lv_aux '*' INTO ls_name-low.
+    MODIFY lr_name FROM ls_name.
+  ENDLOOP.
 
   IF p_table IS NOT INITIAL AND p_field IS NOT INITIAL.
     SELECT (p_field)
       FROM (p_table)
       INTO TABLE gt_data.
 
-    DELETE gt_data WHERE name NOT IN so_name.
+    DELETE gt_data WHERE name NOT IN lr_name.
   ELSE.
     gs_data-name = so_name-low.
     APPEND gs_data TO gt_data.
@@ -205,6 +231,7 @@ FORM call_api  CHANGING p_name
           offset TYPE i,
           length TYPE i,
         END OF ls_matches.
+  DATA: lv_accept TYPE string.
 
   CLEAR: lo_http_client, gs_alv.
 
@@ -240,18 +267,37 @@ FORM call_api  CHANGING p_name
       name  = 'Content-Type'
       value = 'text/xml; charset=utf-8'.
 
+  IF r_v10 IS NOT INITIAL.
+    lv_accept = 'application/json;version=1.0'.
+  ELSEIF r_v12 IS NOT INITIAL.
+    lv_accept = 'application/json;version=1.2'.
+  ENDIF.
+
   CALL METHOD lo_http_client->request->set_header_field
     EXPORTING
       name  = 'Accept'
-      value = 'text/xml, text/html, application/json, text/csv'.
+      value = lv_accept.
 
   IF p_name CS '*'.
     lv_fuzzy = '&fuzzy_name=true'.
   ENDIF.
-  TRANSLATE p_name USING ' +'.
-  SHIFT p_name RIGHT DELETING TRAILING `+`.
-  TRANSLATE p_name USING '*+'.
+
+*  TRANSLATE p_name USING ' +'.
+*  SHIFT p_name RIGHT DELETING TRAILING `+`.
+*  TRANSLATE p_name USING '*+'.
+*  CONDENSE p_name NO-GAPS.
+
+  DATA: lv_aux TYPE string.
+  DATA: p_name_original TYPE string.
+
+  lv_aux = p_name.
+  p_name_original = p_name.
+  lv_aux = cl_http_utility=>escape_url( lv_aux ).
+  p_name = lv_aux.
+  REPLACE ALL OCCURRENCES OF '%20' IN p_name WITH `+`.
+  REPLACE ALL OCCURRENCES OF '%2a' IN p_name WITH `+`.
   CONDENSE p_name NO-GAPS.
+
   CONCATENATE '/search/?api_key=' p_api `&name=` p_name lv_fuzzy `&sources=` p_list INTO v_path.
 
   cl_http_utility=>set_request_uri( request = lo_http_client->request
@@ -303,14 +349,18 @@ FORM call_api  CHANGING p_name
       lv_count_api = lv_response+ls_matches-offset(ls_matches-length).
     ENDLOOP.
   ENDLOOP.
-  IF sy-subrc <> 0.
-    MESSAGE 'Could not connect to the API, check you API Key and try again.' TYPE 'I'.
-    SUBMIT ZSANCTIONSIO VIA SELECTION-SCREEN WITH p_table = p_table
-                                             WITH p_field = p_field
-                                             WITH p_api   = p_api
-                                             WITH p_dest  = p_dest
-                                             WITH so_name = so_name-low.
-  ENDIF.
+*  IF sy-subrc <> 0.
+**    MESSAGE 'Could not connect to the API, check you API Key and try again.' TYPE 'I'.
+**    SUBMIT ZSANCTIONSIO VIA SELECTION-SCREEN WITH p_table = p_table
+**                                             WITH p_field = p_field
+**                                             WITH p_api   = p_api
+**                                             WITH p_dest  = p_dest.
+*                                             "WITH so_name = so_name-low.
+*    gs_alv-search = p_name_original.
+*    gs_alv-name = 'Characters not allowed'.
+*    APPEND gs_alv TO gt_alv.
+*    EXIT.
+*  ENDIF.
 
   IF NOT lv_count_api > 0.
     EXIT.
@@ -480,7 +530,7 @@ FORM show_web_page.
   DATA: lt_html TYPE TABLE OF w3_html,
         ls_html LIKE LINE OF lt_html.
   DATA: lv_url(80).
-
+  CHECK sy-batch IS INITIAL.
   IF docking IS INITIAL .
 *  Create objects for the reference variables
     CREATE OBJECT docking
@@ -514,7 +564,7 @@ FORM show_web_page.
     APPEND ls_html TO lt_html.
     ls_html = `target="_blank">https://opensource.org/<wbr>licenses/BSD-3-Clause</a>.</div><div>Redistribution and use, with or without modification, is permitted.</div>`.
     APPEND ls_html TO lt_html.
-    ls_html = `<div>Copyright 2019 REMEDYNE GmbH.</div><div><br></div><div>Before using this report:</div>`.
+    ls_html = `<div>Copyright 2020 REMEDYNE GmbH.</div><div><br></div><div>Before using this report:</div>`.
     APPEND ls_html TO lt_html.
     ls_html = `<div>1. Create an RFC destination as described here:</div><div><a href="https://remedyne.help/knowledgebase/configure-ssl-client-for-sanction-list-screening/"`.
     APPEND ls_html TO lt_html.
